@@ -57,3 +57,7 @@ __pycache__/
 # msp
 out*/
 3rdparty
+
+ax650n_bsp_sdk
+
+.cache

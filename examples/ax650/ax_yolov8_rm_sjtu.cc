@@ -18,9 +18,11 @@
 * Author: ZHEQIUSHUI
 */
 
+#include <cstddef>
 #include <cstdio>
 #include <cstring>
 #include <numeric>
+#include <cmath>
 
 #include <opencv2/opencv.hpp>
 #include "base/common.hpp"
@@ -35,8 +37,8 @@
 #include "ax_sys_api.h"
 #include "ax_engine_api.h"
 
-const int DEFAULT_IMG_H = 1280;
-const int DEFAULT_IMG_W = 1024;
+const int DEFAULT_IMG_H = 384;
+const int DEFAULT_IMG_W = 640;
 
 const char* CLASS_NAMES[] = {
     "person",
@@ -51,6 +53,31 @@ const float PROB_THRESHOLD = 0.8f;
 const float NMS_THRESHOLD = 0.2f;
 namespace ax
 {
+
+
+    static inline int argmax(const float *ptr, int len)
+    {
+        int max_arg = 0;
+        for (int i = 1; i < len; i++)
+        {
+            if (ptr[i] > ptr[max_arg])
+                max_arg = i;
+        }
+        return max_arg;
+    }
+
+    constexpr float inv_sigmoid(float x)
+    {
+        return -std::log(1 / x - 1);
+    }
+
+    constexpr float sigmoid(float x)
+    {
+        return 1 / (1 + std::exp(-x));
+    }
+
+
+
     void post_process(AX_ENGINE_IO_INFO_T* io_info, AX_ENGINE_IO_T* io_data, const cv::Mat& mat, int input_w, int input_h, const std::vector<float>& time_costs)
     {
         std::vector<rm_detection::Object> proposals;
@@ -64,21 +91,28 @@ namespace ax
         //                             (float*)io_data->pOutputs[4].pVirAddr,  // 1*40*40*51
         //                             (float*)io_data->pOutputs[5].pVirAddr}; // 1*20*20*51
 
-        float* output_box_ptr = (float*)io_data->pOutputs[0].pVirAddr;
-        float* output_cls_ptr = (float*)io_data->pOutputs[1].pVirAddr;
-        float* output_kpt_ptr = (float*)io_data->pOutputs[2].pVirAddr;
-		
-        for (int i = 1; i < 3; ++i)
+        float* out = (float*)io_data->pOutputs[0].pVirAddr;
+		for (size_t i = 0; i < 15120; i++)
         {
-            int32_t stride = (1 << i) * 8;
-            int feat_w = input_w / stride;
-            int feat_h = input_h / stride;
-            rm_detection::generate_proposals_yolov8_rm_native(stride, output_box_ptr, output_cls_ptr, output_kpt_ptr, PROB_THRESHOLD, proposals, input_w, input_h, NUM_POINT, NUM_CLASS);
-            output_box_ptr += feat_h * feat_w * 4;
-            output_cls_ptr += feat_h * feat_w * NUM_CLASS;
-            output_kpt_ptr += feat_h * feat_w * NUM_POINT*2;
+            const float* box_buffer = out+20*i;
+            if (box_buffer[8] < inv_sigmoid(PROB_THRESHOLD))
+                continue;
+            proposals.emplace_back();
+            rm_detection::Object &box = proposals.back();
+            // memcpy(&box.pts, box_buffer, 8 * sizeof(float));
+            for (size_t j = 0; j < 4; j++)
+            {
+                box.landmark[j].x = box_buffer[j*2+0];
+                box.landmark[j].y = box_buffer[j*2+1];
+            }
+            box.prob = sigmoid(box_buffer[8]);
+            box.color = (rm_detection::Color)argmax(box_buffer + 9, 4);
+            box.label = argmax(box_buffer + 13, 7);
+            box.rect.x = box_buffer[0];
+            box.rect.y = box_buffer[1];
+            box.rect.width = 20;
+            box.rect.height = 20;
         }
-        
 
         rm_detection::get_out_bbox_kps(proposals, objects, NMS_THRESHOLD, input_h, input_w, mat.rows, mat.cols);
         fprintf(stdout, "post process cost time:%.2f ms \n", timer_postprocess.cost());
